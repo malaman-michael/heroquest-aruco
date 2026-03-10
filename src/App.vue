@@ -7,8 +7,7 @@ const status      = ref('Avvio...')
 const detectedIds = ref([])
 const fps         = ref(0)
 const gridReady   = ref(false)
-const cameras     = ref([])
-const currentCam  = ref(0)
+const useFront    = ref(false)
 
 const CORNER_IDS = { topLeft: 0, topRight: 1, bottomRight: 2, bottomLeft: 3 }
 const GRID_COLS  = 19
@@ -20,50 +19,38 @@ let rafId      = null
 let frameCount = 0
 let lastFps    = performance.now()
 
-// ── Elenca tutte le camere disponibili ────────────────────────────────────────
-async function getCameras() {
-  const devices = await navigator.mediaDevices.enumerateDevices()
-  cameras.value = devices.filter(d => d.kind === 'videoinput')
-  // Trova indice della camera posteriore di default
-  const backIdx = cameras.value.findIndex(c =>
-    c.label.toLowerCase().includes('back') ||
-    c.label.toLowerCase().includes('rear') ||
-    c.label.toLowerCase().includes('poster') ||
-    c.label.toLowerCase().includes('environment')
-  )
-  if (backIdx >= 0) currentCam.value = backIdx
-}
-
-async function startCamera(deviceId = null) {
-  // Ferma stream precedente
+async function startCamera(front = false) {
   stream?.getTracks().forEach(t => t.stop())
-
-  const constraints = {
-    video: deviceId
-      ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
-      : { facingMode: { exact: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
-  }
+  status.value = front ? 'Avvio camera frontale...' : 'Avvio camera posteriore...'
 
   try {
-    stream = await navigator.mediaDevices.getUserMedia(constraints)
-  } catch {
-    // Fallback senza exact
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 } }
+      video: {
+        facingMode: front ? 'user' : { exact: 'environment' },
+        width:  { ideal: 1280 },
+        height: { ideal: 720  }
+      }
+    })
+  } catch {
+    // fallback senza exact
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: front ? 'user' : 'environment',
+        width:  { ideal: 1280 },
+        height: { ideal: 720  }
+      }
     })
   }
 
   videoRef.value.srcObject = stream
   await videoRef.value.play()
-
-  const track = stream.getVideoTracks()[0]
-  status.value = `✓ ${track.label || 'Camera attiva'}`
+  const label = stream.getVideoTracks()[0]?.label ?? 'Camera'
+  status.value = `✓ ${label}`
 }
 
-async function switchCamera() {
-  currentCam.value = (currentCam.value + 1) % cameras.value.length
-  const cam = cameras.value[currentCam.value]
-  await startCamera(cam.deviceId)
+async function toggleCamera() {
+  useFront.value = !useFront.value
+  await startCamera(useFront.value)
 }
 
 function markerCenter(marker) {
@@ -182,10 +169,8 @@ onMounted(async () => {
     if (!DetectorClass) throw new Error('Detector non trovato: ' + Object.keys(mod).join(', '))
     detector = new DetectorClass()
 
-    await getCameras()
-    const backCam = cameras.value[currentCam.value]
-    await startCamera(backCam?.deviceId)
-
+    // Parte sempre con la posteriore
+    await startCamera(false)
     rafId = requestAnimationFrame(loop)
   } catch(e) {
     status.value = `✗ ${e.message}`
@@ -216,12 +201,9 @@ onUnmounted(() => {
       <b style="color:#7cb3ff">{{ fps }} fps</b>
     </div>
 
-    <!-- Switch camera se ci sono più camere -->
-    <button v-if="cameras.length > 1" class="btn-switch" @click="switchCamera">
-      📷 Switch Camera
-      <span class="cam-label">
-        {{ cameras[currentCam]?.label?.split('(')[0] ?? `Camera ${currentCam + 1}` }}
-      </span>
+    <!-- Pulsante flip camera grande e touch-friendly -->
+    <button class="btn-flip" @click="toggleCamera">
+      {{ useFront ? '🔄 Passa a Posteriore' : '🔄 Passa a Frontale' }}
     </button>
 
     <div class="panel">
@@ -248,6 +230,7 @@ onUnmounted(() => {
 }
 h1 { color: #c8a84b; font-size: 1.3rem }
 h1 span { color: #666; font-weight: 400; font-size: 1rem }
+
 .viewport {
   position: relative; width: 100%; max-width: 900px;
   aspect-ratio: 16/9; background: #000;
@@ -255,6 +238,7 @@ h1 span { color: #666; font-weight: 400; font-size: 1rem }
 }
 .hidden { display: none }
 canvas { width: 100%; height: 100%; display: block }
+
 .badge {
   position: absolute; top: 10px; right: 10px;
   padding: 4px 12px; border-radius: 20px;
@@ -262,20 +246,26 @@ canvas { width: 100%; height: 100%; display: block }
 }
 .badge.ok   { background: #1a3d2b; color: #00ff88 }
 .badge.wait { background: #2b2200; color: #ffaa00 }
+
 .status {
   width: 100%; max-width: 900px; background: #161616;
   border: 1px solid #222; border-radius: 6px;
   padding: .5rem 1rem; font-size: .85rem; color: #aaa;
   display: flex; justify-content: space-between;
 }
-.btn-switch {
+
+.btn-flip {
   width: 100%; max-width: 900px;
-  background: #1a1a2e; border: 1px solid #333; border-radius: 8px;
-  color: #7cb3ff; padding: .7rem 1rem; font-size: .95rem;
-  cursor: pointer; display: flex; align-items: center; gap: .5rem;
+  background: #1a1a2e; border: 2px solid #7cb3ff44;
+  border-radius: 12px; color: #7cb3ff;
+  padding: 1rem; font-size: 1.1rem; font-weight: 700;
+  cursor: pointer; letter-spacing: .03em;
+  /* touch-friendly */
+  min-height: 56px;
+  -webkit-tap-highlight-color: transparent;
 }
-.btn-switch:active { background: #222240 }
-.cam-label { color: #aaa; font-size: .8rem; margin-left: auto }
+.btn-flip:active { background: #22224a }
+
 .panel {
   width: 100%; max-width: 900px; background: #111;
   border: 1px solid #222; border-radius: 8px; padding: .8rem 1rem;
