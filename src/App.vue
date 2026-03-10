@@ -7,6 +7,8 @@ const status      = ref('Avvio...')
 const detectedIds = ref([])
 const fps         = ref(0)
 const gridReady   = ref(false)
+const cameras     = ref([])
+const currentCam  = ref(0)
 
 const CORNER_IDS = { topLeft: 0, topRight: 1, bottomRight: 2, bottomLeft: 3 }
 const GRID_COLS  = 19
@@ -17,6 +19,52 @@ let stream     = null
 let rafId      = null
 let frameCount = 0
 let lastFps    = performance.now()
+
+// ── Elenca tutte le camere disponibili ────────────────────────────────────────
+async function getCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices()
+  cameras.value = devices.filter(d => d.kind === 'videoinput')
+  // Trova indice della camera posteriore di default
+  const backIdx = cameras.value.findIndex(c =>
+    c.label.toLowerCase().includes('back') ||
+    c.label.toLowerCase().includes('rear') ||
+    c.label.toLowerCase().includes('poster') ||
+    c.label.toLowerCase().includes('environment')
+  )
+  if (backIdx >= 0) currentCam.value = backIdx
+}
+
+async function startCamera(deviceId = null) {
+  // Ferma stream precedente
+  stream?.getTracks().forEach(t => t.stop())
+
+  const constraints = {
+    video: deviceId
+      ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+      : { facingMode: { exact: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
+  }
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia(constraints)
+  } catch {
+    // Fallback senza exact
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 } }
+    })
+  }
+
+  videoRef.value.srcObject = stream
+  await videoRef.value.play()
+
+  const track = stream.getVideoTracks()[0]
+  status.value = `✓ ${track.label || 'Camera attiva'}`
+}
+
+async function switchCamera() {
+  currentCam.value = (currentCam.value + 1) % cameras.value.length
+  const cam = cameras.value[currentCam.value]
+  await startCamera(cam.deviceId)
+}
 
 function markerCenter(marker) {
   const c = marker.corners
@@ -53,7 +101,7 @@ function drawGrid(ctx, corners) {
   const { topLeft: TL, topRight: TR, bottomRight: BR, bottomLeft: BL } = corners
   ctx.save()
   ctx.strokeStyle = 'rgba(100,180,255,0.5)'
-  ctx.lineWidth   = 1
+  ctx.lineWidth = 1
 
   for (let c = 0; c <= GRID_COLS; c++) {
     const t  = c / GRID_COLS
@@ -125,27 +173,19 @@ function loop() {
 onMounted(async () => {
   try {
     const mod = await import('js-aruco2')
-    console.log('js-aruco2 keys:', Object.keys(mod))
-
     const DetectorClass =
       mod?.default?.Detector ??
       mod?.AR?.Detector ??
       mod?.Detector ??
-      mod?.default?.AR?.Detector ??
-      null
+      mod?.default?.AR?.Detector ?? null
 
-    if (!DetectorClass) throw new Error('Detector non trovato. Keys: ' + Object.keys(mod).join(', '))
+    if (!DetectorClass) throw new Error('Detector non trovato: ' + Object.keys(mod).join(', '))
+    detector = new DetectorClass()
 
-    detector     = new DetectorClass()
-    status.value = '✓ Detector pronto — avvio camera...'
+    await getCameras()
+    const backCam = cameras.value[currentCam.value]
+    await startCamera(backCam?.deviceId)
 
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 } }
-    })
-    videoRef.value.srcObject = stream
-    await videoRef.value.play()
-
-    status.value = '✓ Punta i 4 marker agli angoli della mappa'
     rafId = requestAnimationFrame(loop)
   } catch(e) {
     status.value = `✗ ${e.message}`
@@ -175,6 +215,14 @@ onUnmounted(() => {
       <span>{{ status }}</span>
       <b style="color:#7cb3ff">{{ fps }} fps</b>
     </div>
+
+    <!-- Switch camera se ci sono più camere -->
+    <button v-if="cameras.length > 1" class="btn-switch" @click="switchCamera">
+      📷 Switch Camera
+      <span class="cam-label">
+        {{ cameras[currentCam]?.label?.split('(')[0] ?? `Camera ${currentCam + 1}` }}
+      </span>
+    </button>
 
     <div class="panel">
       <h2>Marker rilevati</h2>
@@ -220,6 +268,14 @@ canvas { width: 100%; height: 100%; display: block }
   padding: .5rem 1rem; font-size: .85rem; color: #aaa;
   display: flex; justify-content: space-between;
 }
+.btn-switch {
+  width: 100%; max-width: 900px;
+  background: #1a1a2e; border: 1px solid #333; border-radius: 8px;
+  color: #7cb3ff; padding: .7rem 1rem; font-size: .95rem;
+  cursor: pointer; display: flex; align-items: center; gap: .5rem;
+}
+.btn-switch:active { background: #222240 }
+.cam-label { color: #aaa; font-size: .8rem; margin-left: auto }
 .panel {
   width: 100%; max-width: 900px; background: #111;
   border: 1px solid #222; border-radius: 8px; padding: .8rem 1rem;
